@@ -1,10 +1,7 @@
-from dataclasses import asdict
-
-import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.scraper import clean_raw_event, fetch_page_and_events, scrape_and_store
+from app.scraper import load_events_from_temp_download, scrape_and_store
 
 app = FastAPI(title="FOMO UCSD free-food scraper")
 
@@ -27,16 +24,12 @@ def root():
 
 @app.get("/events")
 def list_events():
-    """Live events from the same API as ucsd-free-food; shape matches cleaned JSON files."""
-    with httpx.Client(timeout=60.0, follow_redirects=True) as client:
-        _, _, raw_events = fetch_page_and_events(client)
-    out: list[dict] = []
-    for row in raw_events:
-        mid, cleaned = clean_raw_event(row)
-        payload = asdict(cleaned)
-        payload["id"] = mid
-        out.append(payload)
-    return out
+    outcomes = load_events_from_temp_download()
+    if len(outcomes) == 0:
+        scrape_and_store()
+        outcomes = load_events_from_temp_download()
+    """Events from temp_download/*.json (populated by POST /scrape); no live fetch."""
+    return outcomes
 
 
 @app.post("/scrape")

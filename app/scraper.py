@@ -142,6 +142,25 @@ def fetch_page_and_events(
     return raw_html, soup, raw_events
 
 
+def load_events_from_temp_download() -> list[dict]:
+    """
+    Returns cleaned events from temp_download/*.json (same shape as GET /events:
+    event_name, date, location, image, url, id from filename).
+    """
+    out: list[dict] = []
+    for path in sorted(temp_download_dir().glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        payload = dict(data)
+        payload["id"] = path.stem
+        out.append(payload)
+    return out
+
+
 def scrape_and_store() -> dict:
     """
     Fetches the page and API, builds cleaned events, saves new ones under temp_download/.
