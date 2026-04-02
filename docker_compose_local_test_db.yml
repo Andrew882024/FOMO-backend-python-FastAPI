@@ -1,0 +1,26 @@
+# Local Postgres for development: docker compose -f docker_compose_local_test_db.yml up -d
+# docker compose -f docker_compose_local_test_db.yml down -v
+# Connection (default): postgresql+psycopg2://fomo:fomo_local@localhost:5432/fomo_test
+# Use docker_compose_local_test_db.yml for local development
+# To access the database via terminal:
+#   docker compose -f docker_compose_local_test_db.yml exec postgres psql -U fomo -d fomo_test
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: fomo
+      POSTGRES_PASSWORD: fomo_local
+      POSTGRES_DB: fomo_test
+    volumes:
+      - fomo_local_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fomo -d fomo_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  fomo_local_pg_data:

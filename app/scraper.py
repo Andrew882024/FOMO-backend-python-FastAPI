@@ -4,28 +4,22 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
-from datetime import datetime
-from pathlib import Path
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import httpx
 from bs4 import BeautifulSoup
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.blue_print.db_blue_print import Event, LastScrape
+from app.database import SessionLocal
 
 FREE_FOOD_PAGE_URL = "https://sheeptester.github.io/ucsd-free-food/"
 FREE_FOOD_API_BASE = "https://sheep.thingkingland.app/free-food"
 
 LA = ZoneInfo("America/Los_Angeles")
 _MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
-
-
-def _project_root() -> Path:
-    return Path(__file__).resolve().parent.parent
-
-
-def temp_download_dir() -> Path:
-    d = _project_root() / "temp_download"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
 
 
 def _fmt_ampm(dt: datetime) -> str:
@@ -142,71 +136,99 @@ def fetch_page_and_events(
     return raw_html, soup, raw_events
 
 
-def load_events_from_temp_download() -> list[dict]:
+def load_events_from_db(db: Session) -> list[dict]:
     """
-    Returns cleaned events from temp_download/*.json (same shape as GET /events:
-    event_name, date, location, image, url, id from filename).
+    Returns cleaned events from Postgres (same shape as GET /events:
+    event_name, date, location, image, url, id).
     """
-    out: list[dict] = []
-    for path in sorted(temp_download_dir().glob("*.json")):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            continue
-        if not isinstance(data, dict):
-            continue
-        payload = dict(data)
-        payload["id"] = path.stem
-        out.append(payload)
-    return out
+    rows = db.scalars(select(Event).order_by(Event.date)).all()
+    return [
+        {
+            "id": e.id,
+            "event_name": e.event_name,
+            "date": e.date,
+            "location": e.location,
+            "image": e.image,
+            "url": e.url,
+        }
+        for e in rows
+    ]
 
 
-def scrape_and_store() -> dict:
+def _touch_last_scrape(db: Session) -> None:
+    now = datetime.now(timezone.utc)
+    row = db.get(LastScrape, 1)
+    if row is None:
+        db.add(LastScrape(id=1, timestamp=now))
+    else:
+        row.timestamp = now
+
+
+def scrape_and_store(db: Session | None = None) -> dict:
     """
-    Fetches the page and API, builds cleaned events, saves new ones under temp_download/.
-    Duplicates (already stored _id) are printed and omitted from new saves.
+    Fetches the page and API, builds cleaned events, inserts new rows into Postgres.
+    Duplicates (existing id) are printed and omitted from new_stored.
     """
-    raw_html: str
-    page_soup: BeautifulSoup
-    raw_events: list[dict]
-    with httpx.Client(timeout=60.0, follow_redirects=True) as client:
-        raw_html, page_soup, raw_events = fetch_page_and_events(client)
+    owns_session = db is None
+    if db is None:
+        db = SessionLocal()
+    try:
+        raw_html: str
+        page_soup: BeautifulSoup
+        raw_events: list[dict]
+        with httpx.Client(timeout=60.0, follow_redirects=True) as client:
+            raw_html, page_soup, raw_events = fetch_page_and_events(client)
 
-    page_parsed = extract_page_fields(page_soup)
+        page_parsed = extract_page_fields(page_soup)
 
-    cleaned: list[CleanedEvent] = []
-    ids_order: list[str] = []
-    for row in raw_events:
-        mid, c = clean_raw_event(row)
-        ids_order.append(mid)
-        cleaned.append(c)
+        cleaned: list[CleanedEvent] = []
+        ids_order: list[str] = []
+        for row in raw_events:
+            mid, c = clean_raw_event(row)
+            ids_order.append(mid)
+            cleaned.append(c)
 
-    out_dir = temp_download_dir()
-    new_saved: list[dict] = []
-    duplicates: list[dict] = []
+        new_saved: list[dict] = []
+        duplicates: list[dict] = []
 
-    for mid, event in zip(ids_order, cleaned):
-        path = out_dir / f"{mid}.json"
-        payload = asdict(event)
-        if path.exists():
-            duplicates.append({"_id": mid, **payload})
-            print(f"[duplicate] {json.dumps({'_id': mid, **payload}, ensure_ascii=False)}")
-            continue
-        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        new_saved.append({"_id": mid, **payload})
+        for mid, event in zip(ids_order, cleaned):
+            payload = asdict(event)
+            if db.get(Event, mid) is not None:
+                duplicates.append({"_id": mid, **payload})
+                print(f"[duplicate] {json.dumps({'_id': mid, **payload}, ensure_ascii=False)}")
+                continue
+            db.add(
+                Event(
+                    id=mid,
+                    event_name=event.event_name,
+                    date=event.date,
+                    location=event.location,
+                    image=event.image,
+                    url=event.url,
+                )
+            )
+            new_saved.append({"_id": mid, **payload})
 
-    # Variables requested: raw page, raw list, cleaned list (names only in response for size)
-    return {
-        "page_url": FREE_FOOD_PAGE_URL,
-        "raw_html_length": len(raw_html),
-        "raw_html": raw_html,
-        "page_parsed": page_parsed,
-        "raw_event_count": len(raw_events),
-        "cleaned_events": [asdict(e) for e in cleaned],
-        "new_stored": new_saved,
-        "duplicates": duplicates,
-        "temp_download": str(out_dir.resolve()),
-    }
+        _touch_last_scrape(db)
+        db.commit()
+
+        return {
+            "page_url": FREE_FOOD_PAGE_URL,
+            "raw_html_length": len(raw_html),
+            "raw_html": raw_html,
+            "page_parsed": page_parsed,
+            "raw_event_count": len(raw_events),
+            "cleaned_events": [asdict(e) for e in cleaned],
+            "new_stored": new_saved,
+            "duplicates": duplicates,
+            "storage": "postgresql",
+        }
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        if owns_session:
+            db.close()
 
 
 def strip_html_to_text(html: str) -> str:

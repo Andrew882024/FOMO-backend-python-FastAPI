@@ -1,9 +1,31 @@
-from fastapi import FastAPI
+import asyncio
+from contextlib import asynccontextmanager
+
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
-from app.scraper import load_events_from_temp_download, scrape_and_store
+from app.database import Base, engine, ensure_schema, get_db
+from app.scraper import load_events_from_db, scrape_and_store
+from app.service.fetch_every_24_hours import periodic_scrape_loop
+import app.blue_print.db_blue_print  # noqa: F401 — register tables before create_all
 
-app = FastAPI(title="FOMO UCSD free-food scraper")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    Base.metadata.create_all(bind=engine)
+    ensure_schema(engine)
+    task = asyncio.create_task(periodic_scrape_loop())
+    yield
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+app = FastAPI(title="FOMO UCSD free-food scraper", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -19,17 +41,19 @@ app.add_middleware(
 
 @app.get("/")
 def root():
-    return {"message": "POST /scrape to fetch events and update temp_download/"}
+    return {"message": "POST /scrape to fetch events and store them in Postgres"}
+
+
+@app.get("/health/db")
+def health_db():
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+    return {"database": "ok"}
 
 
 @app.get("/events")
-def list_events():
-    outcomes = load_events_from_temp_download()
-    if len(outcomes) == 0:
-        scrape_and_store()
-        outcomes = load_events_from_temp_download()
-    """Events from temp_download/*.json (populated by POST /scrape); no live fetch."""
-    return outcomes
+def list_events(db: Session = Depends(get_db)):
+    return load_events_from_db(db)
 
 
 @app.post("/scrape")
@@ -37,7 +61,7 @@ def scrape():
     """
     Scrapes https://sheeptester.github.io/ucsd-free-food/ (page HTML in memory)
     and loads events from the public API used by that site. Cleans fields:
-    event_name, date, location, image, url. New events -> temp_download/*.json;
+    event_name, date, location, image, url. New events are inserted into Postgres;
     duplicates are printed to server logs and listed in the response.
     """
     result = scrape_and_store()
