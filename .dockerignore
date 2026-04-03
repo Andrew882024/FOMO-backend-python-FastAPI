@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+.git
+.github
+__pycache__
+*.pyc
+.pytest_cache
+.venv
+venv
+*.md
+docker_compose_local_test_db.yml

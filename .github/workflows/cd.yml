@@ -1,0 +1,183 @@
+# CD for FOMO backend (FastAPI + Postgres). Push image to Docker Hub, pull on EC2, nginx + TLS.
+# Prerequisites: GitHub Environment "production" with secrets below; optional var FOMO_DOCKER_IMAGE
+# (defaults to andrew882024/fomo_backend:latest).
+
+name: CD
+
+on:
+  workflow_dispatch:
+
+env:
+  DOCKER_IMAGE: ${{ vars.FOMO_DOCKER_IMAGE || 'andrew882024/fomo_backend:latest' }}
+
+jobs:
+  deploy:
+    environment: production
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Docker login (Runner)
+        run: |
+          echo "${{ secrets.DOCKER_PASSWORD }}" | \
+          docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+      - name: Build image
+        run: |
+          docker build -t "${DOCKER_IMAGE}" .
+
+      - name: Push image
+        run: |
+          docker push "${DOCKER_IMAGE}"
+
+      - name: Deploy on EC2
+        uses: appleboy/ssh-action@v1
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            if ! command -v docker >/dev/null 2>&1; then
+            sudo apt-get update -y
+            sudo apt install -y ca-certificates curl
+            sudo install -m 0755 -d /etc/apt/keyrings
+            sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+            sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+            sudo tee /etc/apt/sources.list.d/docker.sources <<EOF
+            Types: deb
+            URIs: https://download.docker.com/linux/ubuntu
+            Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+            Components: stable
+            Signed-By: /etc/apt/keyrings/docker.asc
+            EOF
+
+            sudo apt update -y
+            sudo apt-get install docker.io -y
+            sudo apt install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin -y
+            sudo systemctl start docker
+            sudo systemctl enable docker
+            sudo usermod -aG docker ubuntu
+            fi
+
+            cat > .env << 'ENVEOF'
+            APP_ENV=production
+            # Postgres — matches app/database.py (use Session pooler host for Supabase)
+            DB_HOST=${{ secrets.DB_HOST }}
+            DB_PORT=${{ secrets.DB_PORT }}
+            DB_NAME=${{ secrets.DB_NAME }}
+            DB_USER=${{ secrets.DB_USER }}
+            DB_PASSWORD=${{ secrets.DB_PASSWORD }}
+            DB_SSLMODE=${{ secrets.DB_SSLMODE }}
+            # Optional: full URL overrides the DB_* block when set
+            DATABASE_URL=${{ secrets.DATABASE_URL }}
+            ENVEOF
+
+            cat > compose.yml << COMPOSEEOF
+            services:
+              web:
+                image: ${{ env.DOCKER_IMAGE }}
+                container_name: fomo_backend
+                env_file:
+                  - .env
+                ports:
+                  - "127.0.0.1:8000:8000"
+            COMPOSEEOF
+
+            echo ${{ secrets.DOCKER_PASSWORD }} | sudo docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+            sudo docker stop fomo_backend || true
+            sudo docker rm fomo_backend || true
+            sudo docker rmi "${{ env.DOCKER_IMAGE }}" || true
+
+            sudo docker pull "${{ env.DOCKER_IMAGE }}"
+            sudo docker compose down || true
+            sudo docker compose up -d
+
+            sudo docker image prune -f
+
+            DOMAIN="${{ vars.API_DOMAIN }}"
+            EMAIL="${{ vars.CERTBOT_EMAIL }}"
+            APP_PORT="${{ vars.APP_PORT }}"
+            if [ -z "$APP_PORT" ]; then APP_PORT=8000; fi
+
+            if ! command -v nginx >/dev/null 2>&1; then
+            sudo apt-get update -y
+            sudo apt-get install -y nginx
+            fi
+
+            if ! command -v certbot >/dev/null 2>&1; then
+            sudo apt-get update -y
+            sudo apt-get install -y certbot
+            fi
+
+            sudo mkdir -p /var/www/certbot
+
+            sudo tee /etc/nginx/sites-available/api.conf > /dev/null <<EOF
+            server {
+            listen 80;
+            server_name ${DOMAIN};
+
+            location /.well-known/acme-challenge/ {
+                root /var/www/certbot;
+            }
+
+            location / {
+                proxy_pass http://127.0.0.1:${APP_PORT};
+                proxy_set_header Host \$host;
+                proxy_set_header X-Forwarded-For \$remote_addr;
+                proxy_set_header X-Forwarded-Proto http;
+            }
+            }
+            EOF
+
+            sudo ln -sf /etc/nginx/sites-available/api.conf /etc/nginx/sites-enabled/api.conf
+            sudo rm -f /etc/nginx/sites-enabled/default
+            sudo nginx -t
+            sudo systemctl restart nginx
+
+            if [ ! -d "/etc/letsencrypt/live/${DOMAIN}" ]; then
+            sudo apt-get install -y python3-certbot-nginx || true
+            sudo certbot certonly --webroot -w /var/www/certbot \
+                -d "${DOMAIN}" \
+                --non-interactive --agree-tos -m "${EMAIL}"
+            fi
+
+            sudo tee /etc/nginx/sites-available/api.conf > /dev/null <<EOF
+            server {
+            listen 80;
+            server_name ${DOMAIN};
+
+            location /.well-known/acme-challenge/ {
+                root /var/www/certbot;
+            }
+
+            location / {
+                return 301 https://\$host\$request_uri;
+            }
+            }
+
+            server {
+            listen 443 ssl;
+            server_name ${DOMAIN};
+
+            ssl_certificate     /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+            ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+
+            location / {
+                proxy_pass http://127.0.0.1:${APP_PORT};
+                proxy_set_header Host \$host;
+                proxy_set_header X-Forwarded-For \$remote_addr;
+                proxy_set_header X-Forwarded-Proto https;
+            }
+            }
+            EOF
+
+            sudo nginx -t
+            sudo systemctl reload nginx
+
+            sudo systemctl enable --now certbot.timer >/dev/null 2>&1 || true
