@@ -57,12 +57,17 @@ jobs:
             EOF
 
             sudo apt update -y
-            sudo apt-get install docker.io -y
-            sudo apt install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin -y
-            sudo systemctl start docker
+            sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+            sudo systemctl enable docker.socket
+            sudo systemctl start docker.socket
             sudo systemctl enable docker
+            sudo systemctl start docker
             sudo usermod -aG docker ubuntu
             fi
+
+            # Ubuntu 24.04 + Docker CE: docker.service expects socket activation; start socket first.
+            sudo systemctl start docker.socket 2>/dev/null || true
+            sudo systemctl start docker 2>/dev/null || true
 
             cat > .env << 'ENVEOF'
             APP_ENV=production
