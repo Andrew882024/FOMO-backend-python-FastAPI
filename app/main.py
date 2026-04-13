@@ -7,6 +7,8 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.database import Base, engine, ensure_schema, get_db
+from app.routers.instagram_posts import router as instagram_posts_router
+from app.routers.sync import router as sync_router
 from app.scraper import load_events_from_db, scrape_and_store
 from app.service.fetch_every_24_hours import periodic_scrape_loop
 import app.blue_print.db_blue_print  # noqa: F401 — register tables before create_all
@@ -27,11 +29,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="FOMO UCSD free-food scraper", lifespan=lifespan)
 
+app.include_router(sync_router)
+app.include_router(instagram_posts_router)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
+       "*"
     ],
     allow_credentials=True,
     allow_methods=["*"],
