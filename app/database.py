@@ -158,6 +158,7 @@ def ensure_schema(engine) -> None:
         "ALTER TABLE events ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
         "ALTER TABLE last_scrape ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
         "ALTER TABLE last_scrape ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+        "ALTER TABLE instagram_posts ADD COLUMN IF NOT EXISTS is_duplicated BOOLEAN",
     ]
     with engine.begin() as conn:
         for stmt in ddl:

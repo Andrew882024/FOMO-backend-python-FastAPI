@@ -112,6 +112,7 @@ def row_dict_to_upsert_values(row: dict[str, Any]) -> dict[str, Any]:
         "ai_model": _optional_str(row.get("ai_model"), "ai_model"),
         "ai_analyzed": ai_analyzed,
         "event_start_at": _parse_optional_dt(row.get("event_start_at"), "event_start_at"),
+        "is_duplicated": _parse_optional_bool(row.get("is_duplicated"), "is_duplicated"),
         "event_end_at": _parse_optional_dt(row.get("event_end_at"), "event_end_at"),
         "own_s3_url_for_main_image": _optional_str(
             row.get("own_s3_url_for_main_image"), "own_s3_url_for_main_image"
@@ -157,6 +158,7 @@ def upsert_instagram_posts_batch(session: Session, rows: list[dict[str, Any]]) -
             "ai_model": ex.ai_model,
             "ai_analyzed": ex.ai_analyzed,
             "event_start_at": ex.event_start_at,
+            "is_duplicated": ex.is_duplicated,
             "event_end_at": ex.event_end_at,
             "own_s3_url_for_main_image": ex.own_s3_url_for_main_image,
             "created_at": InstagramPosts.created_at,

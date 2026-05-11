@@ -23,4 +23,5 @@ class EnrichedInstagramPost(BaseModel):
     ai_model: str | None
     ai_analyzed: bool
     event_start_at: datetime
+    is_duplicated: bool | None
     own_s3_url_for_main_image: str

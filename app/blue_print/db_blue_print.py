@@ -82,6 +82,7 @@ class InstagramPosts(Base):
     ai_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     ai_analyzed: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=false())
     event_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_duplicated: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     event_end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     own_s3_url_for_main_image: Mapped[str | None] = mapped_column(Text, nullable=True)

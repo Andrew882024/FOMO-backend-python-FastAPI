@@ -26,7 +26,7 @@ def list_enriched_instagram_posts(db: Session = Depends(get_db)) -> list[Enriche
             and_(
                 InstagramPosts.is_event.is_(True),
                 InstagramPosts.ai_analyzed.is_(True),
-                               InstagramPosts.event_start_at.isnot(None),
+                InstagramPosts.event_start_at.isnot(None),
                 _trim_non_empty(InstagramPosts.event_title),
                 _trim_non_empty(InstagramPosts.provider_name),
                 _trim_non_empty(InstagramPosts.post_description),
@@ -55,6 +55,7 @@ def list_enriched_instagram_posts(db: Session = Depends(get_db)) -> list[Enriche
                 "ai_model": r.ai_model,
                 "ai_analyzed": r.ai_analyzed,
                 "event_start_at": r.event_start_at,
+                "is_duplicated": r.is_duplicated,
                 "own_s3_url_for_main_image": r.own_s3_url_for_main_image,
             }
         )
