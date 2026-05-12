@@ -25,6 +25,7 @@ def list_enriched_instagram_posts(db: Session = Depends(get_db)) -> list[Enriche
         .where(
             and_(
                 InstagramPosts.is_event.is_(True),
+                InstagramPosts.is_duplicated.is_not(True),
                 InstagramPosts.ai_analyzed.is_(True),
                 InstagramPosts.event_start_at.isnot(None),
                 _trim_non_empty(InstagramPosts.event_title),
