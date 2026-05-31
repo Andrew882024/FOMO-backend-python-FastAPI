@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends
 from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
@@ -18,47 +20,90 @@ def _trim_non_empty(column):
     return and_(column.isnot(None), func.length(func.trim(column)) > 0)
 
 
+def _base_enriched_filters():
+    return and_(
+        InstagramPosts.is_event.is_(True),
+        InstagramPosts.is_duplicated.is_not(True),
+        InstagramPosts.ai_analyzed.is_(True),
+        InstagramPosts.event_start_at.isnot(None),
+        _trim_non_empty(InstagramPosts.event_title),
+        _trim_non_empty(InstagramPosts.provider_name),
+        _trim_non_empty(InstagramPosts.post_description),
+        _trim_non_empty(InstagramPosts.location),
+        _trim_non_empty(InstagramPosts.own_s3_url_for_main_image),
+    )
+
+
+def _row_to_schema(r: InstagramPosts) -> EnrichedInstagramPost:
+    return EnrichedInstagramPost.model_validate(
+        {
+            "id": r.id,
+            "post_url": r.post_url,
+            "post_shortcode": r.post_shortcode,
+            "is_event": r.is_event,
+            "event_title": r.event_title,
+            "provider_name": r.provider_name,
+            "post_description": r.post_description,
+            "location": r.location,
+            "duration_in_minutes": 1
+            if r.duration_in_minutes is None
+            else r.duration_in_minutes,
+            "confidence": r.confidence,
+            "ai_model": r.ai_model,
+            "ai_analyzed": r.ai_analyzed,
+            "event_start_at": r.event_start_at,
+            "is_duplicated": r.is_duplicated,
+            "own_s3_url_for_main_image": r.own_s3_url_for_main_image,
+        }
+    )
+
+
 @router.get("", response_model=list[EnrichedInstagramPost])
 def list_enriched_instagram_posts(db: Session = Depends(get_db)) -> list[EnrichedInstagramPost]:
     stmt = (
         select(InstagramPosts)
+        .where(_base_enriched_filters())
+        .order_by(InstagramPosts.event_start_at.asc(), InstagramPosts.id.asc())
+    )
+    rows = db.scalars(stmt).all()
+    return [_row_to_schema(r) for r in rows]
+
+
+@router.get("/upcoming", response_model=list[EnrichedInstagramPost])
+def list_upcoming_instagram_events(
+    db: Session = Depends(get_db),
+) -> list[EnrichedInstagramPost]:
+    """Events whose start time is now or in the future, soonest first."""
+    now = datetime.now(timezone.utc)
+    stmt = (
+        select(InstagramPosts)
         .where(
             and_(
-                InstagramPosts.is_event.is_(True),
-                InstagramPosts.is_duplicated.is_not(True),
-                InstagramPosts.ai_analyzed.is_(True),
-                InstagramPosts.event_start_at.isnot(None),
-                _trim_non_empty(InstagramPosts.event_title),
-                _trim_non_empty(InstagramPosts.provider_name),
-                _trim_non_empty(InstagramPosts.post_description),
-                _trim_non_empty(InstagramPosts.location),
-                _trim_non_empty(InstagramPosts.own_s3_url_for_main_image),
+                _base_enriched_filters(),
+                InstagramPosts.event_start_at >= now,
             )
         )
         .order_by(InstagramPosts.event_start_at.asc(), InstagramPosts.id.asc())
     )
     rows = db.scalars(stmt).all()
-    return [
-        EnrichedInstagramPost.model_validate(
-            {
-                "id": r.id,
-                "post_url": r.post_url,
-                "post_shortcode": r.post_shortcode,
-                "is_event": r.is_event,
-                "event_title": r.event_title,
-                "provider_name": r.provider_name,
-                "post_description": r.post_description,
-                "location": r.location,
-                "duration_in_minutes": 1
-                if r.duration_in_minutes is None
-                else r.duration_in_minutes,
-                "confidence": r.confidence,
-                "ai_model": r.ai_model,
-                "ai_analyzed": r.ai_analyzed,
-                "event_start_at": r.event_start_at,
-                "is_duplicated": r.is_duplicated,
-                "own_s3_url_for_main_image": r.own_s3_url_for_main_image,
-            }
+    return [_row_to_schema(r) for r in rows]
+
+
+@router.get("/historical", response_model=list[EnrichedInstagramPost])
+def list_historical_instagram_events(
+    db: Session = Depends(get_db),
+) -> list[EnrichedInstagramPost]:
+    """Events whose start time is in the past, most recent first."""
+    now = datetime.now(timezone.utc)
+    stmt = (
+        select(InstagramPosts)
+        .where(
+            and_(
+                _base_enriched_filters(),
+                InstagramPosts.event_start_at < now,
+            )
         )
-        for r in rows
-    ]
+        .order_by(InstagramPosts.event_start_at.desc(), InstagramPosts.id.desc())
+    )
+    rows = db.scalars(stmt).all()
+    return [_row_to_schema(r) for r in rows]
